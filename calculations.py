@@ -20,4 +20,4 @@ def find_ann_sum(dataset, year):
 
 
 def compute_r(df):
-    df["Annual R-Factor"] = 1.2 * (df["Rainfall"]) + 0.8
+    df["Annual R-Factor"] = 0.363 * (df["Rainfall"]) + 79
