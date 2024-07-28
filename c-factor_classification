@@ -1,0 +1,187 @@
+// Define the Karnataka region of interest
+var Karnataka = ee.Geometry.Polygon(
+ [[ [74.0, 12.5],
+ [74.0, 12.8],
+ [74.5, 12.8],
+ [74.5, 12.7],
+ [74.7, 12.7],
+ [74.7, 12.6],
+ [75.0, 12.6],
+ [75.0, 12.5]]]);
+
+// Filter Sentinel-2 data for Karnataka
+var sentinel2 = ee.ImageCollection('COPERNICUS/S2')
+ .filterBounds(Karnataka)
+ .filterDate('2022-01-01', '2022-12-31')
+ .sort('system:time_start');
+
+// Display the first image in the collection
+var firstImage = ee.Image(sentinel2.first());
+Map.centerObject(Karnataka, 8);
+Map.addLayer(firstImage, {bands: ['B4', 'B3', 'B2'], max: 3000}, 'RGB');
+
+// Export the first image to Google Drive
+Export.image.toDrive({
+ image: firstImage,
+ description: 'Karnataka_Sentinel2_image',
+ scale: 10,
+ region: Karnataka
+});
+
+// Merge training points
+var gcp = Builtup.merge(Vegetation).merge(Water).merge(Barrenland);
+print(gcp);
+
+// Divide sample into training and validation points
+var sample = gcp.randomColumn('random');
+var training = sample.filter(ee.Filter.lt('random', 0.7));
+var validation = sample.filter(ee.Filter.gte('random', 0.7));
+
+// Define band selection for Sentinel-2
+var bands = ['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8']; // Assuming Sentinel-2 bands are B2, B3, B4, B5, B6, B7, B8
+
+// Assign reflectance values to training points
+var trainingdata = firstImage.select(bands).sampleRegions({
+ collection: training, 
+ properties: ['LC'],
+ scale: 10 // Adjust scale according to your needs
+});
+print(trainingdata);
+
+// Train the Random Forest classifier using smileRandomForest
+var classifier_rf = ee.Classifier.smileRandomForest({
+ numberOfTrees: 10, // You can adjust the number of trees as needed
+ seed: 0
+}).train({
+ features: trainingdata, 
+ classProperty: 'LC',
+ inputProperties: bands
+});
+
+// Classify the image using Random Forest
+var classifiedimage_rf = firstImage.select(bands).classify(classifier_rf);
+print(classifiedimage_rf);
+
+// Visualization parameters for classified image
+var visParam_classified_rf = ({
+ min: 0,
+ max: 4,
+ palette: ['#d63000','#5c9a00','#2cece9','#4dff48','#ffc87b']
+});
+
+// Visualizing the Random Forest classified image
+Map.centerObject(Karnataka, 8);
+Map.addLayer(classifiedimage_rf, visParam_classified_rf, 'RANDOM FOREST CLASSIFICATION');
+
+// Assign class names to validation points
+var validationdata = classifiedimage_rf.sampleRegions({
+ collection: validation,
+ properties: ['LC'], 
+ scale: 10 // Adjust scale according to your needs
+});
+
+// Creating confusion matrix for validation
+var confusionMatrixValidation = ee.ConfusionMatrix(validationdata.errorMatrix({
+ actual: 'LC',
+ predicted: 'classification' 
+}));
+
+// Print OA, Users acc., Producers acc., Kappa for validation
+print('Confusion Matrix (Validation)', confusionMatrixValidation);
+print('Overall Accuracy (Validation)', confusionMatrixValidation.accuracy());
+print('Consumer Accuracy (Validation)', confusionMatrixValidation.consumersAccuracy());
+print('Producer Accuracy (Validation)', confusionMatrixValidation.producersAccuracy());
+print('Kappa Coefficient (Validation)', confusionMatrixValidation.kappa());
+
+// Assign class names to training points
+var trainingdata_pred = firstImage.select(bands).sampleRegions({
+ collection: training, 
+ properties: ['LC'],
+ scale: 10 // Adjust scale according to your needs
+});
+
+// Classify training data
+var trainingdata_pred_classified = trainingdata_pred.classify(classifier_rf);
+
+// Creating confusion matrix for training
+var confusionMatrixTraining = ee.ConfusionMatrix(trainingdata_pred_classified.errorMatrix({
+ actual: 'LC',
+ predicted: 'classification' 
+}));
+
+// Print OA, Users acc., Producers acc., Kappa for training
+print('Confusion Matrix (Training)', confusionMatrixTraining);
+print('Overall Accuracy (Training)', confusionMatrixTraining.accuracy());
+print('Consumer Accuracy (Training)', confusionMatrixTraining.consumersAccuracy());
+print('Producer Accuracy (Training)', confusionMatrixTraining.producersAccuracy());
+print('Kappa Coefficient (Training)', confusionMatrixTraining.kappa());
+
+// Set position of legend panel
+var legend = ui.Panel({ style: {
+ position: 'bottom-right',
+ padding:'8px 15px'}
+});
+
+// Create legend title
+var legendTitle = ui.Label({
+ value:'Karnataka_Landcover',
+ style:{
+ fontWeight:'bold',
+ fontSize:'18px',
+ margin:'0 0 4px 0',
+ padding:'0'}
+ });
+  
+// Add the title to the panel
+legend.add(legendTitle);
+
+// Create and style 1 row of the legend
+var makeRow = function (color,name){
+// Create the label that is actually the colored box
+var colorBox = ui.Label({
+ style:{
+ backgroundColor: '#' + color,
+// Using padding to give the box height and width
+ padding: '8px',
+ margin:'0 0 4px 0'
+ }
+});
+
+// Create the label filled with the description text
+var description = ui.Label({
+ value: name,
+ style: {margin: '0 0 4px 6px'}
+});
+
+// Return the panel
+return ui.Panel({
+ widgets: [colorBox, description],
+ layout: ui.Panel.Layout.Flow('horizontal')
+ });
+};
+// Palette with the colors
+var palette= ['d63000','5c9a00','2cece9','4dff48','ffc87b'];
+// Name of the legend
+var names= ['Builtup','Forest','Water','Vegetation','Barrenland'];
+// Add color and names
+for (var i = 0; i<5; i++){
+legend.add(makeRow(palette[i], names[i]));
+}
+Map.add(legend);
+
+// Save training data
+var fc = ee.FeatureCollection(trainingdata);
+Export.table.toDrive({
+ collection: fc,
+ folder: 'KarnatakaLC'
+});
+
+// Export the classified map to Google Drive
+Export.image.toDrive({
+ image: classifiedimage_rf.visualize(visParam_classified_rf),
+ description: 'CLASSIFIED_MAP_RF',
+ scale: 10, // Set the scale in meters per pixel
+ region: Karnataka, // Set the region to export
+ folder: 'GEE', // Set the folder to save the file
+ maxPixels: 1e13 // Set the maximum number of pixels to export
+});
